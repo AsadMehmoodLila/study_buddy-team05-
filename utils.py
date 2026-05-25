@@ -18,18 +18,262 @@ except ImportError:  # pragma: no cover - handled at runtime in the UI
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize the OpenAI client pointing to OpenRouter's URL
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY") or "missing-key",
-)
-
-MODEL_ID = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 MAX_CONTEXT_CHARS = 18000
 
 
 def _missing_key_message():
     return "OPENROUTER_API_KEY is missing. Add it to your .env file and restart Streamlit."
+
+
+def _get_providers():
+    return [
+        {
+            "name": "OpenRouter",
+            "api_key": os.getenv("OPENROUTER_API_KEY"),
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": os.getenv("OPENROUTER_MODEL", "openrouter/free"),
+        },
+        {
+            "name": "Groq",
+            "api_key": os.getenv("GROQ_API_KEY"),
+            "base_url": "https://api.groq.com/openai/v1",
+            "model": "llama-3.3-70b-versatile",
+        },
+        {
+            "name": "Google Gemini",
+            "api_key": os.getenv("GEMINI_API_KEY"),
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "model": "gemini-1.5-flash",
+        }
+    ]
+
+
+def _extract_topic(user_prompt):
+    match = re.search(r"'(.*?)'", user_prompt)
+    if match:
+        return match.group(1)
+    match_on = re.search(r"on: '(.*?)'", user_prompt)
+    if match_on:
+        return match_on.group(1)
+    return "the uploaded documents"
+
+
+def _mock_notes(topic):
+    return {
+        "notes": (
+            f"Mock Offline Mode (Apology: All API keys failed or limits reached):\n\n"
+            f"Here are simulated study notes for '{topic}':\n\n"
+            f"1. Core Concepts: The study of {topic} focuses on identifying primary elements, "
+            "analyzing key variables, and understanding logical frameworks.\n\n"
+            f"2. Methodologies: Implementing techniques related to {topic} involves structured, "
+            "repeatable procedures to ensure reproducible and reliable results.\n\n"
+            "3. Best Practices: Students should utilize active recall, spaced repetition, "
+            "and continuous testing to master these concepts."
+        ),
+        "points": [
+            f"Understand the main definitions and context of {topic}.",
+            f"Identify primary techniques, processes, or models.",
+            f"Apply structured analysis to evaluate practical use-cases."
+        ],
+        "summary": f"In summary, mastering {topic} requires a structured combination of theoretical study and practical exercises."
+    }
+
+
+def _mock_flashcards(topic):
+    return {
+        "flashcards": [
+            {"question": f"What is the primary definition of {topic}?", "answer": f"It refers to the core concepts and frameworks defined under {topic}."},
+            {"question": f"Why is {topic} important in study planning?", "answer": "It serves as a fundamental building block for mastering advanced materials."},
+            {"question": f"What is a common challenge when studying {topic}?", "answer": "Synthesizing large volumes of text into structured notes without active recall."},
+            {"question": f"Name a key technique to study {topic} efficiently.", "answer": "Breaking down the materials into smaller components and testing yourself with flashcards."},
+            {"question": f"How can you evaluate your progress in {topic}?", "answer": "By taking regular quizzes and analyzing your performance over time."}
+        ]
+    }
+
+
+def _mock_quiz(topic, user_prompt):
+    return {
+        "quiz": [
+            {
+                "question": f"Which of the following is a primary objective of studying {topic}?",
+                "options": [
+                    "To optimize information retention and understanding",
+                    "To completely avoid structured review sessions",
+                    "To memorize facts without understanding their context",
+                    "To rely solely on passive reading before exams"
+                ],
+                "answer": "To optimize information retention and understanding"
+            },
+            {
+                "question": f"What is a key benefit of using active recall for {topic}?",
+                "options": [
+                    "It strengthens memory retrieval paths compared to passive reading",
+                    "It guarantees 100% exam scores without study effort",
+                    "It replaces the need for understanding the basics",
+                    "It is only useful for advanced topics"
+                ],
+                "answer": "It strengthens memory retrieval paths compared to passive reading"
+            },
+            {
+                "question": f"How should you structure study materials for {topic}?",
+                "options": [
+                    "Rank files logically by starting with foundational topics first",
+                    "Study advanced topics before learning basic terminology",
+                    "Complete tasks in random sequence order",
+                    "Avoid using a timeline or study planner"
+                ],
+                "answer": "Rank files logically by starting with foundational topics first"
+            }
+        ]
+    }
+
+
+def _mock_roadmap(user_prompt):
+    files = re.findall(r"FILE:\s*(.*?)\n", user_prompt)
+    if not files:
+        files = ["Document_1.pdf", "Document_2.pdf"]
+    roadmap = []
+    for idx, filename in enumerate(files, start=1):
+        roadmap.append({
+            "step": idx,
+            "file": filename,
+            "reason": f"Establish a solid understanding of foundations by reviewing {filename}.",
+            "focus": f"Take comprehensive notes and review key concepts in {filename}."
+        })
+    return {"roadmap": roadmap}
+
+
+def _mock_chat(user_prompt):
+    context_match = re.search(r"Uploaded context:\s*(.*?)\s*Student question:", user_prompt, re.DOTALL)
+    question_match = re.search(r"Student question:\s*(.*)", user_prompt, re.DOTALL)
+    
+    context = context_match.group(1).strip() if context_match else ""
+    question = question_match.group(1).strip() if question_match else ""
+    
+    if context and question:
+        words = [w.lower() for w in re.findall(r"\b\w{4,}\b", question)]
+        sentences = re.split(r"(?<=[.!?])\s+", context)
+        
+        matches = []
+        for sentence in sentences:
+            score = sum(1 for word in words if word in sentence.lower())
+            if score > 0:
+                matches.append((score, sentence))
+        
+        if matches:
+            matches.sort(key=lambda x: x[0], reverse=True)
+            best_sentences = [m[1] for m in matches[:3]]
+            joined_sentences = " ".join(best_sentences)
+            return (
+                f"Mock Offline Mode (Apology: All API keys failed or limits reached):\n\n"
+                f"[Simulated response based on document text]:\n"
+                f"{joined_sentences}\n\n"
+                f"(Source Grounding: Extracted from matching sentences in context)"
+            )
+            
+    return (
+        f"Mock Offline Mode (Apology: All API keys failed or limits reached):\n\n"
+        f"I could not find a specific answer for '{question}' in the uploaded documents. "
+        "Please check if all API services are online or try rephrasing your question."
+    )
+
+
+def _mock_summary(user_prompt):
+    doc_name_match = re.search(r"Document name:\s*(.*?)\n", user_prompt)
+    doc_name = doc_name_match.group(1).strip() if doc_name_match else "Document"
+    
+    context_match = re.search(r"Source document:\s*(.*)", user_prompt, re.DOTALL)
+    context = context_match.group(1).strip() if context_match else ""
+    
+    sentences = re.split(r"(?<=[.!?])\s+", context)
+    valid_sentences = [s for s in sentences if len(s.strip()) > 10]
+    
+    if len(valid_sentences) >= 2:
+        extracted = " ".join(valid_sentences[:3])
+        return f"Mock Offline Mode Summary for '{doc_name}': {extracted}"
+    else:
+        return f"Mock Offline Mode Summary: This document covers key concepts and structures relating to '{doc_name}'."
+
+
+def _local_mock_fallback(system_prompt, user_prompt, json_mode, error_context=None):
+    print(f"API Fallback system activated. Error occurred: {error_context}. Running local mock fallback.")
+    if json_mode:
+        if "flashcards" in user_prompt.lower():
+            topic = _extract_topic(user_prompt)
+            return _mock_flashcards(topic)
+        elif "quiz" in user_prompt.lower():
+            topic = _extract_topic(user_prompt)
+            return _mock_quiz(topic, user_prompt)
+        elif "roadmap" in user_prompt.lower():
+            return _mock_roadmap(user_prompt)
+        else:
+            topic = _extract_topic(user_prompt)
+            return _mock_notes(topic)
+    else:
+        if "student question:" in user_prompt.lower():
+            return _mock_chat(user_prompt)
+        elif "document name:" in user_prompt.lower():
+            return _mock_summary(user_prompt)
+        else:
+            return (
+                "Mock Offline Mode (Apology: All API keys failed or limits reached):\n\n"
+                "An error occurred with all configured API providers. Here is a simulated response to keep the application running."
+            )
+
+
+def _call_llm_with_fallback(system_prompt, user_prompt, json_mode=False):
+    providers = _get_providers()
+    last_error = None
+    
+    for provider in providers:
+        api_key = provider["api_key"]
+        if not api_key or api_key == "missing-key" or api_key.startswith("your_actual"):
+            continue
+        
+        try:
+            prov_client = OpenAI(
+                base_url=provider["base_url"],
+                api_key=api_key
+            )
+            
+            kwargs = {
+                "model": provider["model"],
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            
+            response = prov_client.chat.completions.create(**kwargs)
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("Received empty content from provider API.")
+            
+            if json_mode:
+                return json.loads(content)
+            else:
+                return content.strip()
+                
+        except Exception as e:
+            last_error = f"[{provider['name']} failed: {str(e)}]"
+            
+    return _local_mock_fallback(system_prompt, user_prompt, json_mode, error_context=last_error)
+
+
+def _json_completion(system_prompt, user_prompt, fallback):
+    try:
+        return _call_llm_with_fallback(system_prompt, user_prompt, json_mode=True)
+    except Exception as e:
+        return fallback(str(e))
+
+
+def _text_completion(system_prompt, user_prompt):
+    try:
+        return _call_llm_with_fallback(system_prompt, user_prompt, json_mode=False)
+    except Exception as e:
+        return f"AI request failed: {str(e)}"
 
 
 def _clean_text(text):
@@ -46,41 +290,6 @@ def _truncate_context(context, max_chars=MAX_CONTEXT_CHARS):
     if len(context) <= max_chars:
         return context
     return context[:max_chars] + "\n\n[Context truncated to fit the model window.]"
-
-
-def _json_completion(system_prompt, user_prompt, fallback):
-    if not os.getenv("OPENROUTER_API_KEY"):
-        return fallback(_missing_key_message())
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_ID,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        return fallback(str(e))
-
-
-def _text_completion(system_prompt, user_prompt):
-    if not os.getenv("OPENROUTER_API_KEY"):
-        return _missing_key_message()
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_ID,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"AI request failed: {str(e)}"
 
 
 def extract_text_from_file(file_name, file_bytes):
@@ -292,33 +501,14 @@ def generate_quiz(topic, source_context=None):
             "answer": error
         }]}
 
-    def _json_completion(system_prompt, user_prompt, fallback):
-        if not os.getenv("OPENROUTER_API_KEY"):
-            return fallback(_missing_key_message())
-
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_ID,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"}
-            )
-            
-            # Response content ko variable mein save karein
-            content = response.choices[0].message.content
-            
-            # Check karein ke kahin AI ne empty/None response toh nahi bheja
-            if not content:
-                return fallback("AI API returned an empty response (Server might be overloaded). Please try again.")
-                
-            # Agar text mojood hai toh usay JSON mein convert karein
-            return json.loads(content)
-            
-        except Exception as e:
-            return fallback(str(e))
-
+    data = _json_completion(
+        "You are a helpful AI study assistant that strictly outputs valid JSON.",
+        prompt,
+        fallback
+    )
+    if isinstance(data, dict):
+        return data.get("quiz", [])
+    return []
 
 def chat_with_documents(question, source_context):
     """Answers a student question strictly from uploaded document context."""
